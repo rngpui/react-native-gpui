@@ -661,6 +661,12 @@ extension ColliderRuntime {
                                     durationNanoseconds: elapsedNanoseconds(
                                         since: taskStart),
                                     observations: observations)
+                            } catch is CancellationError {
+                                // A build the run stopped is not a build
+                                // failure, and attributing it as one lets an
+                                // interrupted run report a compiler error it
+                                // never saw.
+                                throw CancellationError()
                             } catch {
                                 if let failure = error as? ExecutionFailure {
                                     throw failure
@@ -852,12 +858,28 @@ extension ColliderRuntime {
                         logPath: logPath,
                         reason: String(describing: error))
                 }
+            // Work the run stopped was never judged on its merits, and the
+            // error it surfaces does not say so. Shutting a task group down
+            // reaches a running container as whatever tearing it down
+            // produces -- a removed container reports `not found` -- so the
+            // error's type distinguishes only the few paths that raise
+            // `CancellationError` themselves. Deciding on it alone reports one
+            // failing task as several, including tasks whose own stage log
+            // records them passing before the teardown reached them. What the
+            // task was asked to do decides it instead: a cancelled task, or one
+            // running while the runtime is shutting down, was stopped.
+            let stopped =
+                if error is CancellationError || Task.isCancelled {
+                    true
+                } else {
+                    await cancellation.wasInterrupted()
+                }
             if let eventRun, let eventRegistry {
                 try? await eventRegistry.recordTaskDuration(
                     elapsedNanoseconds(since: taskStart),
                     task: task.id,
                     in: eventRun)
-                if error is CancellationError {
+                if stopped {
                     try? await eventRegistry.record(
                         .task(.cancelled(task.id)),
                         in: eventRun)
@@ -867,7 +889,9 @@ extension ColliderRuntime {
                         in: eventRun)
                 }
             }
-            if error is CancellationError { throw error }
+            // What escapes has to agree with what was recorded, or the run
+            // names a task as its cause that its own state says was stopped.
+            if stopped { throw CancellationError() }
             throw failure
         }
     }

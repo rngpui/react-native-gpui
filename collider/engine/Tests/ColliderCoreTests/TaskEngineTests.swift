@@ -144,6 +144,111 @@ private struct FailAfterWriteAction: ColliderAction {
     }
 }
 
+private actor TeardownRendezvous {
+    private var peerStarted = false
+
+    func markStarted() { peerStarted = true }
+
+    func waitForPeer() async {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !peerStarted, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+}
+
+/// Fails only once the task it has to outlive is running.
+private struct FailsAfterPeerStartsAction: ColliderAction {
+    struct Identity: ColliderActionIdentity {
+        func encode(into _: inout IdentityEncoder) {}
+    }
+
+    static let kind: ActionKind = "fixture.fails-after-peer-starts"
+    let identity = Identity()
+    let rendezvous: TeardownRendezvous
+
+    var requirements: ActionRequirements {
+        ActionRequirements(effects: [], executionPlatform: .macOSARM64Native)
+    }
+
+    func execute(in _: ActionContext) async throws {
+        await rendezvous.waitForPeer()
+        throw RuntimeFailure.invalidOutput("injected failure")
+    }
+}
+
+/// Reports a resource-level error once the run stops it, the way a container
+/// operation reports the container teardown has already removed.
+private struct ReportsATornDownResourceAction: ColliderAction {
+    struct Identity: ColliderActionIdentity {
+        func encode(into _: inout IdentityEncoder) {}
+    }
+
+    static let kind: ActionKind = "fixture.torn-down-resource"
+    let identity = Identity()
+    let rendezvous: TeardownRendezvous
+
+    var requirements: ActionRequirements {
+        ActionRequirements(effects: [], executionPlatform: .macOSARM64Native)
+    }
+
+    func execute(in _: ActionContext) async throws {
+        await rendezvous.markStarted()
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        throw TornDownResourceFailure()
+    }
+}
+
+private struct TornDownResourceFailure: Error, CustomStringConvertible {
+    var description: String {
+        "notFound: \"container with ID fixture-a351c408 not found\""
+    }
+}
+
+@Test func aTaskTheRunStoppedIsRecordedCancelledRatherThanFailed() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+        "collider-engine-teardown-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let root = FilePath(directory.path)
+    let rendezvous = TeardownRendezvous()
+    let failing = TaskDeclaration(
+        id: TaskID(rawValue: "fixture.fails"),
+        component: ComponentID(rawValue: "fixture"),
+        action: try AnyColliderAction(
+            FailsAfterPeerStartsAction(rendezvous: rendezvous)))
+    let stopped = TaskDeclaration(
+        id: TaskID(rawValue: "fixture.stopped"),
+        component: ComponentID(rawValue: "fixture"),
+        action: try AnyColliderAction(
+            ReportsATornDownResourceAction(rendezvous: rendezvous)))
+    let registry = RunRegistry(root: root.appending("runs"))
+    let run = try await registry.begin(command: ["collider", "verify", "fixture"])
+
+    await #expect(throws: (any Error).self) {
+        _ = try await ColliderEngine(runtime: ColliderRuntime()).execute(
+            graph: TaskGraph([failing, stopped]),
+            selected: [failing.id, stopped.id],
+            stateRoot: root.appending("state"),
+            run: run,
+            registry: registry)
+    }
+    try await registry.finish(run, status: .failed)
+    let state = try await registry.reducedEvents(
+        in: registry.recordedRun(run.id))
+
+    // The stopped task's own error is what tearing its resource down produced,
+    // never a verdict on the work. Reading it as one reports a single failing
+    // task as several and can mark work that had already finished as failed.
+    #expect(state.tasks[stopped.id] == .cancelled)
+    guard case .failed = try #require(state.tasks[failing.id]) else {
+        Issue.record("the causal failure was not recorded as a failure")
+        return
+    }
+    #expect(state.failedTask == failing.id)
+}
+
 private struct CyclicOwnerCompletionLowering: TaskPlanLowering {
     func lower(_ tasks: [AssessedTaskDeclaration]) throws -> [LoweredExecutionTask] {
         guard let owner = tasks.first?.task else { return [] }
