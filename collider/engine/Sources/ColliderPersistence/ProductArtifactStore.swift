@@ -296,6 +296,19 @@ public struct LocalProductArtifactStore: Sendable {
         return stored
     }
 
+    /// Whether the store holds an artifact at all, without reading it.
+    ///
+    /// A publication writes the generation naming its products before it
+    /// writes the products themselves, so a run interrupted between the two
+    /// leaves a generation the store cannot serve. Deciding whether that
+    /// generation is still a rollback target is a question about presence, and
+    /// answering it with `validatedArtifact` would conflate the artifact never
+    /// having been written with its having been corrupted after it was.
+    public func contains(_ identity: ProductArtifactID) -> Bool {
+        (try? artifactDirectory(identity).stat(followTargetSymlink: false))?
+            .type == .directory
+    }
+
     public func qualify(
         _ envelope: ProductArtifactEnvelope,
         role: ProductArtifactQualificationRole,
@@ -445,10 +458,17 @@ public struct LocalProductArtifactStore: Sendable {
             retainedArtifacts.map { $0.rawValue.hexadecimal })
         var retainedArchiveNames: Set<String> = []
 
+        // An absent entry is the case these guards exist to report, so neither
+        // may reach it through a throwing `stat`. A caller naming an artifact
+        // the store does not hold otherwise gets a bare `No such file or
+        // directory`, which says neither which artifact was wanted nor that a
+        // retained one was what went missing.
         for name in retainedNames.sorted() {
             let directory = products.appending(name)
-            let metadata = try directory.stat(followTargetSymlink: false)
-            guard metadata.type == .directory else {
+            guard
+                (try? directory.stat(followTargetSymlink: false))?.type
+                    == .directory
+            else {
                 throw ProductArtifactStoreFailure(
                     "retained artifact is missing: \(name)")
             }
@@ -456,7 +476,7 @@ public struct LocalProductArtifactStore: Sendable {
             retainedArchiveNames.insert(manifest.archiveDigest.hexadecimal)
             let archive = archives.appending(manifest.archiveDigest.hexadecimal)
             guard
-                try archive.stat(followTargetSymlink: false).type == .regular
+                (try? archive.stat(followTargetSymlink: false))?.type == .regular
             else {
                 throw ProductArtifactStoreFailure(
                     "retained archive blob is missing: \(manifest.archiveDigest)")

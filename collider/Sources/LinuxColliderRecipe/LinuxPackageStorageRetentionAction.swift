@@ -87,9 +87,11 @@ package struct LinuxPackageStorageRetentionAction: ColliderAction {
                             naming: DirectoryNamePattern(rawValue: #"^\.candidate$"#)),
                     ]))
         }
-        let retained = try retainedProductArtifacts(files: context.files)
-        _ = try LocalProductArtifactStore(root: productStoreRoot).prune(
-            retaining: retained)
+        let store = LocalProductArtifactStore(root: productStoreRoot)
+        let retained = try retainedProductArtifacts(
+            files: context.files,
+            store: store)
+        _ = try store.prune(retaining: retained)
     }
 
     package func validateOutputs(using files: ActionFileSystem) throws {
@@ -103,7 +105,8 @@ package struct LinuxPackageStorageRetentionAction: ColliderAction {
     }
 
     private func retainedProductArtifacts(
-        files: ActionFileSystem
+        files: ActionFileSystem,
+        store: LocalProductArtifactStore
     ) throws -> Set<ProductArtifactID> {
         var retained: Set<ProductArtifactID> = []
         for lane in lanes {
@@ -112,10 +115,12 @@ package struct LinuxPackageStorageRetentionAction: ColliderAction {
                 (try? generations.stat(followTargetSymlink: false).type)
                     == .directory
             else { continue }
+            let active = try activeGenerationName(lane: lane, files: files)
             for name in try FileManager.default.contentsOfDirectory(
                 atPath: generations.string
             ).sorted() where isArtifactGenerationName(name) {
-                let manifestPath = generations.appending(name).appending(
+                let generation = generations.appending(name)
+                let manifestPath = generation.appending(
                     "linux-native-package-cohort.json")
                 let manifest: LinuxNativePackageCohortPublication
                 do {
@@ -132,7 +137,26 @@ package struct LinuxPackageStorageRetentionAction: ColliderAction {
                         "retained package cohort has the wrong architecture: "
                             + manifestPath.string)
                 }
-                retained.formUnion(manifest.products.map(\.productArtifact))
+                let products = manifest.products.map(\.productArtifact)
+                let absent = products.filter { !store.contains($0) }
+                guard absent.isEmpty else {
+                    // A cohort becomes durable before the task that stores its
+                    // products runs, so a run interrupted between the two
+                    // leaves a generation naming products the store never
+                    // received. Rolling back to it is not possible, which
+                    // makes it exactly the garbage this task collects, and
+                    // retaining its products would ask the store to keep
+                    // artifacts it does not have.
+                    guard name != active else {
+                        throw LinuxPackageStorageRetentionFailure(
+                            "the active package cohort names \(absent.count) "
+                                + "of \(products.count) products the store "
+                                + "does not hold: \(manifestPath)")
+                    }
+                    try files.remove(generation)
+                    continue
+                }
+                retained.formUnion(products)
             }
         }
         guard !retained.isEmpty else {
@@ -140,6 +164,24 @@ package struct LinuxPackageStorageRetentionAction: ColliderAction {
                 "package storage retention found no retained products")
         }
         return retained
+    }
+
+    /// The generation `current` names, when it names one.
+    ///
+    /// The active generation is the one deployment resolves, so it is the one
+    /// whose absence from the store is corruption rather than an incomplete
+    /// publication left behind.
+    private func activeGenerationName(
+        lane: LinuxPackageStorageRetentionLane,
+        files: ActionFileSystem
+    ) throws -> String? {
+        let current = lane.packageRoot.appending("current")
+        guard
+            try files.metadataWithoutFollowingSymlinks(for: current)?.type
+                == .symbolicLink
+        else { return nil }
+        return FilePath(try files.readSymbolicLink(current)).lastComponent?
+            .string
     }
 }
 

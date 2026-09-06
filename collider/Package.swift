@@ -330,6 +330,9 @@ let package = Package(
             name: "LinuxColliderRecipeTests",
             dependencies: [
                 .product(name: "ColliderCore", package: "engine"),
+                .product(name: "ColliderPersistence", package: "engine"),
+                .product(name: "ColliderRuntime", package: "engine"),
+                .product(name: "ColliderTesting", package: "engine"),
                 "ChromiumColliderRecipe",
                 "LinuxColliderRecipe",
                 "LinuxPackageAssembly",

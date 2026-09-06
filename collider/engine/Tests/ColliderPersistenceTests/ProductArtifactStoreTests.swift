@@ -404,6 +404,63 @@ func productArtifactIdentityRejectsAbsoluteHostPaths(argument: String) throws {
     #expect(FileManager.default.fileExists(atPath: unknownArchive.path))
 }
 
+@Test func productArtifactStoreNamesARetainedArtifactItNoLongerHolds() throws {
+    let directory = temporaryDirectory(named: "collider-product-missing-retained")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let fixture = try productFixture(
+        in: directory.appendingPathComponent("product"),
+        archiveContents: "retained-archive")
+    let provenance = try localProvenance()
+    let envelope = try productEnvelope(fixture: fixture, provenance: provenance)
+    let storeRoot = directory.appendingPathComponent("store")
+    let store = LocalProductArtifactStore(root: FilePath(storeRoot.path))
+    _ = try store.publish(
+        envelope,
+        payloadRoot: fixture.payload,
+        archive: fixture.archive)
+    let name = envelope.identity.rawValue.hexadecimal
+    #expect(store.contains(envelope.identity))
+
+    try FileManager.default.removeItem(
+        at: storeRoot.appendingPathComponent("products/\(name)"))
+
+    #expect(!store.contains(envelope.identity))
+    do {
+        _ = try store.prune(retaining: [envelope.identity])
+        Issue.record("pruning accepted a retained artifact the store lost")
+    } catch let error as ProductArtifactStoreFailure {
+        #expect(error.description.contains("retained artifact is missing"))
+        #expect(error.description.contains(name))
+    }
+}
+
+@Test func productArtifactStoreNamesARetainedArchiveBlobItNoLongerHolds() throws {
+    let directory = temporaryDirectory(named: "collider-product-missing-blob")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let fixture = try productFixture(
+        in: directory.appendingPathComponent("product"),
+        archiveContents: "retained-archive")
+    let provenance = try localProvenance()
+    let envelope = try productEnvelope(fixture: fixture, provenance: provenance)
+    let storeRoot = directory.appendingPathComponent("store")
+    let store = LocalProductArtifactStore(root: FilePath(storeRoot.path))
+    _ = try store.publish(
+        envelope,
+        payloadRoot: fixture.payload,
+        archive: fixture.archive)
+    let blob = envelope.manifest.archiveDigest.hexadecimal
+
+    try FileManager.default.removeItem(
+        at: storeRoot.appendingPathComponent("archives/\(blob)"))
+
+    do {
+        _ = try store.prune(retaining: [envelope.identity])
+        Issue.record("pruning accepted a retained blob the store lost")
+    } catch let error as ProductArtifactStoreFailure {
+        #expect(error.description.contains("retained archive blob is missing"))
+    }
+}
+
 @Test func nativeQualificationRejectsCrossTranslatedAndVirtualCapabilities() throws {
     let crossBuild = ProductArtifactQualificationCapability(
         runnerPlatform: .current,
