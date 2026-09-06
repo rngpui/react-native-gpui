@@ -150,7 +150,9 @@ private struct CyclicOwnerCompletionLowering: TaskPlanLowering {
         return [
             LoweredExecutionTask(
                 task: TaskDeclaration(
-                    id: "fixture.lowered", component: "fixture", dependencies: [owner.id]),
+                    id: TaskID(rawValue: "fixture.lowered"),
+                    component: ComponentID(rawValue: "fixture"),
+                    dependencies: [owner.id]),
                 attribution: "fixture", logicalOwners: [owner.id], prerequisites: [owner.id])
         ]
     }
@@ -159,7 +161,9 @@ private struct CyclicOwnerCompletionLowering: TaskPlanLowering {
 @Test func executionGraphRejectsCyclesIntroducedByOwnerCompletionEdges() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: directory) }
-    let owner = TaskDeclaration(id: "fixture.owner", component: "fixture")
+    let owner = TaskDeclaration(
+        id: TaskID(rawValue: "fixture.owner"),
+        component: ComponentID(rawValue: "fixture"))
     do {
         _ = try await ColliderEngine(runtime: ColliderRuntime()).execute(
             graph: TaskGraph([owner]), selected: [owner.id], stateRoot: FilePath(directory.path),
@@ -177,17 +181,22 @@ private struct CyclicOwnerCompletionLowering: TaskPlanLowering {
     defer { try? FileManager.default.removeItem(at: directory) }
     let root = FilePath(directory.path)
     let state = root.appending("state")
-    var producer = TaskBuilder(id: "fixture.producer", component: "fixture")
+    var producer = TaskBuilder(
+        id: TaskID(rawValue: "fixture.producer"),
+        component: ComponentID(rawValue: "fixture"))
     let artifact = try producer.output(
         "value", path: root.appending("value"), validation: .regularFile)
-    var consumer = TaskBuilder(id: "fixture.consumer", component: "fixture")
+    var consumer = TaskBuilder(
+        id: TaskID(rawValue: "fixture.consumer"),
+        component: ComponentID(rawValue: "fixture"))
     consumer.consume(artifact)
     let result = try consumer.output(
         "result", path: root.appending("result"), validation: .regularFile)
     let consumerTask = consumer.build(action: try fixtureWriteAction(result.path, bytes: [42]))
     // An untyped edge must transitively carry the consumer's final identity.
     let downstream = TaskDeclaration(
-        id: "fixture.downstream", component: "fixture",
+        id: TaskID(rawValue: "fixture.downstream"),
+        component: ComponentID(rawValue: "fixture"),
         dependencies: [consumer.id],
         outputs: [OutputDeclaration(path: root.appending("downstream"), validation: .regularFile)],
         action: try fixtureWriteAction(root.appending("downstream"), bytes: [43]))
@@ -1067,9 +1076,13 @@ private struct CyclicOwnerCompletionLowering: TaskPlanLowering {
         stateRoot: FilePath(directory.appendingPathComponent("state").path),
         options: TaskExecutionOptions(dryRun: true))
 
+    // Every cached task in every build store is keyed by this encoding, so a
+    // digest that moves without an intended change to what identity covers
+    // silently discards all of them. Update the constant only alongside such a
+    // change, never to make the test agree with what the encoder now emits.
     #expect(
         report.plan[0].identity.description
-            == "sha256:20b12175124861249330e08e4503b183a5804e57fb4f8f55fb9823271d3d05e6")
+            == "sha256:3493e04dc9b66f3f85bb84119533c5c3a2f9e791ca23d176a1574cf4df2289a5")
 }
 
 @Test func taskEngineExplainsInvalidationAndThenSkipsCleanWork() async throws {

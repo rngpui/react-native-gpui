@@ -7,10 +7,14 @@ import SystemPackage
 import Testing
 
 @Test func coldConsumersDeferWithoutReadingUnproducedArtifacts() async throws {
-    var producer = TaskBuilder(id: "fixture.producer", component: "fixture")
+    var producer = TaskBuilder(
+        id: TaskID(rawValue: "fixture.producer"),
+        component: ComponentID(rawValue: "fixture"))
     let artifact = try producer.output(
         "value", path: FilePath("/not-produced"), validation: .regularFile)
-    var consumer = TaskBuilder(id: "fixture.consumer", component: "fixture")
+    var consumer = TaskBuilder(
+        id: TaskID(rawValue: "fixture.consumer"),
+        component: ComponentID(rawValue: "fixture"))
     consumer.consume(artifact)
     let digest = ArtifactDigest.sha256([UInt8]())
     let services = TaskPlanningServices(

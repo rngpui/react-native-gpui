@@ -18,10 +18,14 @@ private enum ObservationFixtureFailure: Error {
     try await registry.recordPlan(
         [
             TaskPlanEntry(
-                task: "fixture.task", identity: identity, isClean: false,
+                task: TaskID(rawValue: "fixture.task"), identity: identity,
+                isClean: false,
                 explanation: "historical assessment", coordinates: nil)
         ], in: run)
-    try await registry.recordTaskOutcome(.executed, task: "fixture.task", in: run)
+    try await registry.recordTaskOutcome(
+        .executed,
+        task: TaskID(rawValue: "fixture.task"),
+        in: run)
     try await registry.finish(run, status: .succeeded)
     let path = directory.appendingPathComponent("runs/\(run.id.rawValue)/manifest.json")
     var object = try #require(
